@@ -1,13 +1,17 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include <ArduinoJson.h>
 
-#define FLOAT_SWITCH 14   // Float water level sensor
-#define FAUCET_RELAY 0    // Relay for the faucet
-#define PUMP_RELAY 13      // Relay for the pump
+#define FLOAT_LOW 13   // Float sensor for low water level (20%)
+#define FLOAT_MID 14   // Float sensor for mid water level (50%)
+#define FLOAT_HIGH 12  // Float sensor for high water level (100%)
+
+#define FAUCET_RELAY 5  // Relay for the faucet
+#define PUMP_RELAY 4    // Relay for the pump
 
 // WiFi & MQTT
-const char* ssid = "tp-link";
-const char* password = "09270734452";
+const char* ssid = "HUAWEI-2.4G-G9ad";
+const char* password = "77t3PXz4";
 const char* mqtt_server = "157.245.204.46";
 
 WiFiClient espClient;
@@ -15,14 +19,27 @@ PubSubClient client(espClient);
 
 bool autoPumpMode = true;    // Default: Automatic pump mode
 bool autoFaucetMode = true;  // Default: Automatic faucet mode
+bool isMAISMode = false;     // Default: Tank-based automation
+int lastWaterLevel = -1;     // Stores last published water level
+String lastFaucetOpenTank = "false";
+String lastFaucetOpenMais = "false";
+String lastPumpOpenMais = "false";
+String lastPumpOpenTank = "false";
+
+unsigned long lastPublishTime = 0;  // Tracks last publish time
+const long publishInterval = 3000;  // 10 seconds
 
 void setup() {
-  Serial.begin(115200);
-  pinMode(FLOAT_SWITCH, INPUT_PULLUP);
+  Serial.begin(9600);
+  Serial.println("Booting ESP8266...");
+  pinMode(FLOAT_LOW, INPUT_PULLUP);
+  pinMode(FLOAT_MID, INPUT_PULLUP);
+  pinMode(FLOAT_HIGH, INPUT_PULLUP);
   pinMode(FAUCET_RELAY, OUTPUT);
   pinMode(PUMP_RELAY, OUTPUT);
-  digitalWrite(PUMP_RELAY, LOW);   // Ensure pump relay starts OFF
-  digitalWrite(FAUCET_RELAY, HIGH); // Ensure faucet starts OPEN (HIGH = Open)
+
+  digitalWrite(PUMP_RELAY, LOW);     // Ensure pump relay starts OFF
+  digitalWrite(FAUCET_RELAY, HIGH);  // Ensure faucet starts OPEN (HIGH = Open)
 
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
@@ -42,44 +59,76 @@ void loop() {
   }
   client.loop();
 
-  int floatState = digitalRead(FLOAT_SWITCH);
+  int lowState = digitalRead(FLOAT_LOW);
+  int midState = digitalRead(FLOAT_MID);
+  int highState = digitalRead(FLOAT_HIGH);
 
-  Serial.print("Float: ");
-  Serial.print(floatState);
-  Serial.print(" | Pump: ");
-  Serial.print(digitalRead(PUMP_RELAY));
-  Serial.print(" | Faucet: ");
-  Serial.println(digitalRead(FAUCET_RELAY));
+  String currentFaucetOpenTank;
+  String currentFaucetOpenMais;
+  String currentPumpOpenTank;
+  String currentPumpOpenMais;
 
-  // Publish float sensor state
-  client.publish("water-level/float", floatState == LOW ? "LOW" : "OK");
+  int currentWaterLevel = (highState == LOW) ? 100 : (midState == LOW) ? 50
+                                                   : (lowState == LOW) ? 20
+                                                                       : 0;
 
-  // **Automatic Pump Logic**
-  if (autoPumpMode) {
-    if (floatState == LOW) {  // Water low, turn pump ON
-      digitalWrite(PUMP_RELAY, HIGH);
-      Serial.println("🚰 Water LOW! Pump ON.");
-    } else {  // Water OK, turn pump OFF
-      digitalWrite(PUMP_RELAY, LOW);
-      Serial.println("✅ Water OK. Pump OFF.");
-    }
+  bool pumpState = digitalRead(PUMP_RELAY) == HIGH;
+  bool faucetState = digitalRead(FAUCET_RELAY) == HIGH;
+
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - lastPublishTime >= publishInterval) {
+    lastPublishTime = currentMillis;
+
+    StaticJsonDocument<200> jsonDoc;
+    jsonDoc["water_level"] = currentWaterLevel;
+    jsonDoc["pump_state"] = pumpState;
+    jsonDoc["faucet_state"] = faucetState;
+    jsonDoc["auto_faucet"] = autoFaucetMode;
+    jsonDoc["auto_pump"] = autoPumpMode;
+    jsonDoc["mode"] = isMAISMode ? "mais" : "tank";
+
+    char jsonBuffer[256];
+    serializeJson(jsonDoc, jsonBuffer);
+
+    client.publish("water-level/full-state", jsonBuffer);
+
+    // Serial.print("Published JSON: ");
+    // Serial.println(jsonBuffer);
   }
 
-  // **Automatic Faucet Logic**
-  if (autoFaucetMode) {
-    if (floatState == LOW) {  // At 20% → Faucet CLOSES
-      digitalWrite(FAUCET_RELAY, LOW);
-      Serial.println("❌ Water 20%! Faucet CLOSED.");
-    } else if (floatState == HIGH) {  // At 50%+ → Faucet OPENS
-      digitalWrite(FAUCET_RELAY, HIGH);
-      Serial.println("🚰 Water 50%+ Faucet OPEN.");
+  // Serial.print("LOW: ");
+  // Serial.print(lowState == LOW ? "ON" : "OFF");
+  // Serial.print(" | MID: ");
+  // Serial.print(midState == LOW ? "ON" : "OFF");
+  // Serial.print(" | HIGH: ");
+  // Serial.print(highState == LOW ? "ON" : "OFF");
+  // Serial.print(" | LEVEL: ");
+  // Serial.println(currentWaterLevel);
+
+  if (!isMAISMode) {
+    if (autoPumpMode) {
+      digitalWrite(PUMP_RELAY, currentWaterLevel == 20 || currentWaterLevel == 0 ? HIGH : LOW);
+      // Serial.println(currentWaterLevel == 20 || currentWaterLevel == 0 ? "🚰 Pump ON (Water LOW)" : "✅ Pump OFF");
+    }
+
+    if (autoFaucetMode) {
+      digitalWrite(FAUCET_RELAY, (midState == LOW || highState == LOW) ? HIGH : LOW);
+      // Serial.println((midState == LOW || highState == LOW) ? "🚰 Faucet OPEN" : "❌ Faucet CLOSED");
+    }
+  } else {
+    if (autoPumpMode) {
+      digitalWrite(PUMP_RELAY, currentWaterLevel == 20 || currentWaterLevel == 0 ? HIGH : LOW);
+      // Serial.println(currentWaterLevel == 20 || currentWaterLevel == 0 ? "🚰 MAIS Mode: Pump ON (Water LOW)" : "✅ Pump OFF");
+    }
+    if (autoFaucetMode) {
+      // Serial.println("🔧 Faucet controlled by MAIS.");
     }
   }
 
   delay(1000);
 }
 
-// **Handle MQTT Messages**
 void callback(char* topic, byte* payload, unsigned int length) {
   String message;
   for (int i = 0; i < length; i++) {
@@ -89,46 +138,27 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.println(message);
 
   if (strcmp(topic, "water-level/pump-control") == 0) {
-    if (message == "true") {
-      digitalWrite(PUMP_RELAY, HIGH);
-      Serial.println("🔧 Manual Pump ON");
-    } else if (message == "false") {
-      digitalWrite(PUMP_RELAY, LOW);
-      Serial.println("🔧 Manual Pump OFF");
-    }
-  } 
-  else if (strcmp(topic, "water-level/auto-pump") == 0) {
-    if (message == "true") {
-      autoPumpMode = true;
-      Serial.println("Auto Pump Mode: ENABLED");
-    } else if (message == "false") {
-      autoPumpMode = false;
-      Serial.println("Auto Pump Mode: DISABLED");
-      digitalWrite(PUMP_RELAY, LOW);
-    }
-  } 
-  else if (strcmp(topic, "water-level/faucet-control") == 0) {
-    if (message == "true") {
-      digitalWrite(FAUCET_RELAY, HIGH);
-      Serial.println("🔧 Manual Faucet OPEN");
-    } else if (message == "false") {
-      digitalWrite(FAUCET_RELAY, LOW);
-      Serial.println("🔧 Manual Faucet CLOSED");
-    }
-  } 
-  else if (strcmp(topic, "water-level/auto-faucet") == 0) {
-    if (message == "true") {
-      autoFaucetMode = true;
-      Serial.println("Auto Faucet Mode: ENABLED");
-    } else if (message == "false") {
-      autoFaucetMode = false;
-      Serial.println("Auto Faucet Mode: DISABLED");
-      digitalWrite(FAUCET_RELAY, HIGH);  // Default to Open
-    }
+    digitalWrite(PUMP_RELAY, message == "true" ? HIGH : LOW);
+  } else if (strcmp(topic, "water-level/auto-pump") == 0) {
+    digitalWrite(PUMP_RELAY, LOW);
+    autoPumpMode = message == "true";
+    Serial.println(autoPumpMode ? "Auto Pump Mode: ENABLED" : "Auto Pump Mode: DISABLED");
+  } else if (strcmp(topic, "water-level/faucet-control") == 0) {
+    digitalWrite(FAUCET_RELAY, message == "true" ? HIGH : LOW);
+  } else if (strcmp(topic, "water-level/auto-faucet") == 0) {
+    digitalWrite(FAUCET_RELAY, LOW);
+    autoFaucetMode = message == "true";
+    Serial.println(autoFaucetMode ? "Auto Faucet Mode: ENABLED" : "Auto Faucet Mode: DISABLED");
+  } else if (strcmp(topic, "water-level/mode") == 0) {
+    digitalWrite(FAUCET_RELAY, LOW);
+    digitalWrite(PUMP_RELAY, LOW);
+    // autoFaucetMode= true;
+    // autoPumpMode= true;
+    isMAISMode = message == "mais";
+    Serial.println(isMAISMode ? "Switched to MAIS Mode" : "Switched to Tank-Based Mode");
   }
 }
 
-// **Reconnect MQTT**
 void reconnect() {
   while (!client.connected()) {
     Serial.print("Connecting to MQTT...");
@@ -138,6 +168,7 @@ void reconnect() {
       client.subscribe("water-level/auto-pump");
       client.subscribe("water-level/faucet-control");
       client.subscribe("water-level/auto-faucet");
+      client.subscribe("water-level/mode");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
