@@ -1,6 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <WiFiManager.h>
 
 #define FLOAT_LOW 13   // Float sensor for low water level (20%)
 #define FLOAT_MID 14   // Float sensor for mid water level (50%)
@@ -10,8 +11,8 @@
 #define PUMP_RELAY 4    // Relay for the pump
 
 // WiFi & MQTT
-const char* ssid = "HUAWEI-2.4G-G9ad";
-const char* password = "77t3PXz4";
+// const char* ssid = "HUAWEI-2.4G-G9ad";
+// const char* password = "77t3PXz4";
 const char* mqtt_server = "157.245.204.46";
 
 WiFiClient espClient;
@@ -41,7 +42,18 @@ void setup() {
   digitalWrite(PUMP_RELAY, LOW);     // Ensure pump relay starts OFF
   digitalWrite(FAUCET_RELAY, HIGH);  // Ensure faucet starts OPEN (HIGH = Open)
 
-  WiFi.begin(ssid, password);
+   // Initialize WiFi using WiFiManager
+  WiFiManager wifiManager;
+  
+  // Uncomment to reset saved credentials (for testing)
+  // wifiManager.resetSettings();
+
+if (!wifiManager.autoConnect("ESP8266-WATER-CONTROL")) { //TODO Change Device Number
+    Serial.println("Failed to connect and hit timeout");
+    ESP.restart();
+    delay(1000);
+  }
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
