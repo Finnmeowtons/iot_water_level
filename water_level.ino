@@ -134,6 +134,7 @@ void loop() {
       // Serial.println(currentWaterLevel == 20 || currentWaterLevel == 0 ? "🚰 MAIS Mode: Pump ON (Water LOW)" : "✅ Pump OFF");
     }
     if (autoFaucetMode) {
+      digitalWrite(FAUCET_RELAY, (midState == LOW || highState == LOW) ? HIGH : LOW); // Irrigation opens when 50% 
       // Serial.println("🔧 Faucet controlled by MAIS.");
     }
   }
